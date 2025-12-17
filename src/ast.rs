@@ -1,5 +1,5 @@
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::fmt;
-use std::collections::{HashMap, HashSet};
 use crate::lexer::SrcPos;
 use crate::symbols::Decl;
 use crate::host::HostFn;
@@ -324,7 +324,18 @@ impl Function
 #[derive(Default, Clone, Debug)]
 pub struct Class
 {
+    // Class name
     pub name: String,
+
+    // Name of the parent class
+    pub parent_name: Option<String>,
+
+    // Parent class id
+    pub parent_id: ClassId,
+
+    // Flag to indicate this class has subclasses
+    // This is used to accelerate instanceof checks
+    pub has_children: bool,
 
     // Map of field names to slot indices
     pub fields: HashMap<String, usize>,

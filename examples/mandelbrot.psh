@@ -9,8 +9,8 @@ let HEIGHT = 480;
 // The region of the complex plane to render
 let RE_START = -2.0;
 let RE_END = 1.0;
-let IM_START = -1.0;
-let IM_END = 1.0;
+let IM_START = -1.125;
+let IM_END = 1.125;
 
 let MAX_ITER = 60;
 
@@ -54,7 +54,7 @@ for (let var y = 0; y < HEIGHT; ++y) {
         // Set the pixel color based on the number of iterations
         let color = (iter == MAX_ITER) ? rgb32(0, 0, 0) : palette[iter];
         let idx = y * WIDTH + x;
-        frame_buffer.store_u32(idx, color);
+        frame_buffer.set_u32(idx, color);
     }
 }
 

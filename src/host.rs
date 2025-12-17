@@ -5,8 +5,8 @@ use std::time::Duration;
 use crate::alloc::Alloc;
 use crate::vm::{Value, VM, Actor};
 use crate::ast::{Expr, Function, Program};
-use crate::{error, unwrap_usize, unwrap_str};
 use crate::str::Str;
+use crate::*;
 
 /// Host function signature
 /// Note: the in/out arg count should be fixed so
@@ -79,6 +79,7 @@ pub fn get_host_const(name: &str, fun: &Function, prog: &Program) -> Expr
     static READ_FILE_UTF8: HostFn = HostFn { name: "read_file", f: Fn1(read_file_utf8) };
     static WRITE_FILE: HostFn = HostFn { name: "write_file", f: Fn2(write_file) };
     static VM_SHRINK_HEAP: HostFn = HostFn { name: "vm_shrink_heap", f: Fn1(vm_shrink_heap) };
+    static VM_GC_COLLECT: HostFn = HostFn { name: "vm_gc_collect", f: Fn0(vm_gc_collect) };
     static ACTOR_ID: HostFn = HostFn { name: "actor_id", f: Fn0(actor_id) };
     static ACTOR_PARENT: HostFn = HostFn { name: "actor_parent", f: Fn0(actor_parent) };
     static ACTOR_SLEEP: HostFn = HostFn { name: "actor_sleep", f: Fn1(actor_sleep) };
@@ -111,6 +112,7 @@ pub fn get_host_const(name: &str, fun: &Function, prog: &Program) -> Expr
         "write_file" => &WRITE_FILE,
 
         "vm_shrink_heap" => &VM_SHRINK_HEAP,
+        "vm_gc_collect" => &VM_GC_COLLECT,
         "actor_id" => &ACTOR_ID,
         "actor_parent" => &ACTOR_PARENT,
         "actor_sleep" => &ACTOR_SLEEP,
@@ -161,7 +163,7 @@ pub fn cmd_num_args(actor: &mut Actor) -> Result<Value, String>
 /// Get a command-line argument string by index
 pub fn cmd_get_arg_or(actor: &mut Actor, idx: Value, default: Value) -> Result<Value, String>
 {
-    let idx = idx.unwrap_usize();
+    let idx = unwrap_usize!(idx);
 
     let args = crate::REST_ARGS.lock().unwrap();
 
@@ -426,12 +428,23 @@ fn vm_shrink_heap(actor: &mut Actor, new_size: Value) -> Result<Value, String>
 {
     let new_size = unwrap_usize!(new_size);
 
+    if new_size > actor.alloc.mem_size() {
+        return Err("requested heap size is larger than the current heap size".into());
+    }
+
     if actor.alloc.bytes_used() > new_size {
         return Err("requested heap size is smaller than bytes currently allocated".into());
     }
 
     actor.alloc.shrink_to(new_size);
 
+    Ok(Value::Nil)
+}
+
+/// Manually trigger garbage collection in the current actor
+fn vm_gc_collect(actor: &mut Actor) -> Result<Value, String>
+{
+    actor.gc_collect(0, &mut []);
     Ok(Value::Nil)
 }
 
@@ -453,7 +466,7 @@ fn actor_parent(actor: &mut Actor) -> Result<Value, String>
 /// Make the current actor sleep
 fn actor_sleep(actor: &mut Actor, msecs: Value) -> Result<Value, String>
 {
-    let msecs = msecs.unwrap_u64();
+    let msecs = unwrap_u64!(msecs);
     thread::sleep(Duration::from_millis(msecs));
     Ok(Value::Nil)
 }
@@ -479,7 +492,7 @@ fn actor_spawn(actor: &mut Actor, fun: Value) -> Result<Value, String>
 /// Wait for a thread to terminate, produce the return value
 fn actor_join(actor: &mut Actor, actor_id: Value) -> Result<Value, String>
 {
-    let id = actor_id.unwrap_u64();
+    let id = unwrap_u64!(actor_id);
     Ok(VM::join_actor(&actor.vm, id))
 }
 
@@ -487,8 +500,7 @@ fn actor_join(actor: &mut Actor, actor_id: Value) -> Result<Value, String>
 /// This will return false in case of failure
 fn actor_send(actor: &mut Actor, actor_id: Value, msg: Value) -> Result<Value, String>
 {
-    let actor_id = actor_id.unwrap_u64();
-
+    let actor_id = unwrap_u64!(actor_id);
     let res = actor.send(actor_id, msg);
 
     if res.is_ok() {
@@ -518,6 +530,6 @@ fn actor_poll(actor: &mut Actor) -> Result<Value, String>
 /// End program execution
 fn exit(thread: &mut Actor, val: Value) -> Result<Value, String>
 {
-    let val = (val.unwrap_i64() & 0xFF) as i32;
+    let val = (unwrap_i64!(val) & 0xFF) as i32;
     std::process::exit(val);
 }

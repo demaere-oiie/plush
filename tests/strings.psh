@@ -38,6 +38,26 @@ assert("not a number".parse_int(10) == nil);
 assert(" 0".parse_int(2) == nil);
 assert("0 ".parse_int(2) == nil);
 
+// Test parse_float
+assert("123".parse_float() == 123);
+assert("3.14".parse_float() == 3.14);
+assert("-3.14".parse_float() == -3.14);
+assert("2.5E10".parse_float() == 2.5E10);
+assert("2.5e10".parse_float() == 2.5e10);
+assert("2.5E-10".parse_float() == 2.5E-10);
+assert("1.e1".parse_float() == 10);
+assert("1e1".parse_float() == 10);
+assert("-1e-1".parse_float() == -0.1);
+assert("5.".parse_float() == 5);
+assert(".5".parse_float() == 0.5);
+assert("0.5".parse_float() == 0.5);
+assert("7".parse_float() == 7);
+assert("007".parse_float() == 7);
+assert(" 1.0".parse_float() == nil);
+assert("1.1 ".parse_float() == nil);
+assert("1..".parse_float() == nil);
+
+
 // Test trim
 assert("  hello  ".trim() == "hello");
 assert("\n world   \n   ".trim() == "world");
@@ -81,5 +101,21 @@ assert(parts3[0] == "abc");
 let parts4 = "".split(",");
 assert(parts4.len == 1);
 assert(parts4[0] == "");
+
+// Test upper
+assert("Hello, world!".upper() == "HELLO, WORLD!");
+assert("UPPER".upper() == "UPPER");
+assert("große klasse".upper() == "GROSSE KLASSE");
+assert("Cabaça".upper() == "CABAÇA");
+assert("λambda".upper() == "ΛAMBDA");
+assert("Γεια σας!".upper() == "ΓΕΙΑ ΣΑΣ!");
+
+// Test lower
+assert("Hello, World!".lower() == "hello, world!");
+assert("lower".lower() == "lower");
+assert("TSCHÜSS".lower() == "tschüss");
+assert("CABAÇA".lower() == "cabaça");
+assert("ΛAMBDA".lower() == "λambda");
+assert("ΓΕΙΑ ΣΑΣ!".lower() == "γεια σας!");
 
 $println("string tests passed");

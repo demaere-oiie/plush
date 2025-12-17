@@ -8,17 +8,14 @@ The Plush language has:
 - Dynamic typing
 - Classes and objects
 - Closures/lambdas
-- Separate `Float64` and `Int64` types
 - Dynamic arrays aka vectors/lists
-- Immutable UTF-8 strings
 - Dictionaries with JSON-like syntax
 - A native byte array type
 - A simple frame buffer API for graphics and animations
 - A simple audio output API
-- An extensible set of host functions defined in `src/host.rs`
-- The ability to importing code from other source files
 - Memory safe, actor-based parallelism
 - A copying garbage-collector that runs independently for each actor
+- No global VM lock
 
 Caveats and limitations:
 - Error messages and error handling need improvement
@@ -42,6 +39,20 @@ can be found in the [`examples/`](/examples) directory. These examples are avail
 
 ## Language Basics
 
+### Data Types
+
+Plush is a dynamically typed language and supports the following data types:
+
+-   **Int64**: 64-bit signed integers (e.g., `10`, `-5`).
+-   **Float64**: 64-bit floating-point numbers (e.g., `3.14`, `-0.5`).
+-   **String**: Immutable UTF-8 encoded strings (e.g., `"hello"`, `'world'`).
+-   **Bool**: The constants `true` or `false`.
+-   **Nil**: The constant `nil` represents the absence of a value.
+-   **Array**: Ordered collections of values (e.g., `[1, 2, 3]`).
+-   **ByteArray**: Raw, mutable byte buffers.
+-   **Object**: Instances of classes.
+-   **Dictionaries**: Hash maps with string keys, like JS/Python/JSON (e.g., `{a:1, b: 2}`)
+
 ### Variables
 
 Variables are declared using the `let` keyword. By default, variables are immutable. To declare a mutable variable, use `let var`.
@@ -59,20 +70,6 @@ for (let var i = 0; i < 10; ++i)
     $println(i);
 ```
 
-### Data Types
-
-Plush is a dynamically typed language and supports the following data types:
-
--   **Int64**: 64-bit signed integers (e.g., `10`, `-5`).
--   **Float64**: 64-bit floating-point numbers (e.g., `3.14`, `-0.5`).
--   **String**: Immutable UTF-8 encoded strings (e.g., `"hello"`, `'world'`).
--   **Bool**: The constants `true` or `false`.
--   **Nil**: The constant `nil` represents the absence of a value.
--   **Array**: Ordered collections of values (e.g., `[1, 2, 3]`).
--   **ByteArray**: Raw, mutable byte buffers.
--   **Object**: Instances of classes.
--   **Dictionaries**: Hash maps with string keys, like JS/Python/JSON (e.g., `{a:1, b: 2}`)
-
 ### Operators
 
 Plush supports a range of arithmetic, comparison, and logical operators:
@@ -85,18 +82,6 @@ The `_/` operator performs integer division, that is, truncated division which o
 an integer output, whereas the division operator `/` yields a floating-point value as output.
 
 Note that unlike in JavaScript, the `==` operator performs reference equality for objects and arrays, not structural equality.
-
-### Arrays
-
-The syntax for array literals is similar to that of JavaScript, e.g.
-
-```
-let a = [0, 1, 2, 3, 4];
-```
-
-Array elements an be accessed using the indexing operator with square brackets, e.g. `a[0] = 1`.
-ByteArrays can also be indexed using square brackets to read and write individual bytes.
-The length of arrays and ByteArrays is accessed via the `.len` field.
 
 ### Control Flow
 
@@ -132,6 +117,18 @@ fun add(a, b) {
 let result = add(5, 10);
 $println(result); // 15
 ```
+
+### Arrays
+
+The syntax for array literals is similar to that of JavaScript, e.g.
+
+```
+let a = [0, 1, 2, 3, 4];
+```
+
+Array elements an be accessed using the indexing operator with square brackets, e.g. `a[0] = 1`.
+ByteArrays can also be indexed using square brackets to read and write individual bytes.
+The length of arrays and ByteArrays is accessed via the `.len` field.
 
 ### Classes
 
@@ -180,6 +177,7 @@ render_text("Hello world");
     -   `max(other)`: Returns the maximum of this number and `other`.
     -   `to_f()`: Converts the integer to a 64-bit float.
     -   `to_s()`: Converts the integer to a string.
+    -   `to_hex(digits)`: Get a zero-padded and capitalized hexadecimal string representation of this integer.`
 -   **Float64**
     -   `abs()`: Get the absolute value of this number.
     -   `ceil()`: Returns the smallest integer greater than or equal to the float.
@@ -204,7 +202,10 @@ render_text("Hello world");
     -   `byte_at(byte_idx)`: Get the UTF-8 byte at the given byte index.
     -   `char_at(byte_idx)`: Get a string for the single character at the given byte index. Returns `nil` if invalid.
     -   `parse_int(radix)`: Try to parse the entire string as an integer of the given `radix`. Returns `nil` on failure.
+    -   `parse_float()`: Try to parse the entire string as a float. Returns `nil` on failure.
     -   `trim()`: Produce a new string without whitespace at the beginning or end.
+    -   `upper()`: Produce a new string as the uppercase version of the string.
+    -   `lower()`: Produce a new string as the lowercase version of the string.
     -   `split(sep)`: Given a separator string, split a string into an array of parts.
 -   **Array**
     -   `with_size(size, value)`: Creates a new array of the given size, filled with the given value.
@@ -216,15 +217,21 @@ render_text("Hello world");
 -   **ByteArray**
     -   `with_size(size)`: Creates a new `ByteArray` of the given size.
     -   `resize(new_size)`: Resizes the `ByteArray`. If the new size is larger, the new bytes are filled with zeros.
-    -   `fill_u32(start_index, count, value)`: Fills a portion of the `ByteArray` with a repeated 32-bit unsigned integer value.
-    -   `load_u32(index)`: Reads a 32-bit unsigned integer from the `ByteArray` at the given index.
-    -   `store_u32(index, value)`: Writes a 32-bit unsigned integer to the `ByteArray` at the given index.
-    -   `load_u16(index)`: Reads a 16-bit unsigned integer from the `ByteArray` at the given index.
-    -   `store_u16(index, value)`: Writes a 16-bit unsigned integer to the `ByteArray` at the given index.
-    -   `load_f32(index)`: Reads a 32-bit float from the `ByteArray` at the given index.
-    -   `store_f32(index, value)`: Writes a 32-bit float to the `ByteArray` at the given index.
+    -   `load_u32(byte_idx)`: Reads a 32-bit unsigned integer from the `ByteArray` at the given byte index.
+    -   `store_u32(byte_idx, value)`: Writes a 32-bit unsigned integer to the `ByteArray` at the given byte index.
+    -   `load_u16(byte_idx)`: Reads a 16-bit unsigned integer from the `ByteArray` at the given byte index.
+    -   `store_u16(byte_idx, value)`: Writes a 16-bit unsigned integer to the `ByteArray` at the given byte index.
+    -   `load_f32(byte_idx)`: Reads a 32-bit float from the `ByteArray` at the given byte index.
+    -   `store_f32(byte_idx, value)`: Writes a 32-bit float to the `ByteArray` at the given byte index.
+    -   `get_u32(index)`: Treat the byte array as an array of u32 values and read the element at the given index.
+    -   `set_u32(index, value)`: Treat the byte array as an array of u32 values and write the element at the given index.
+    -   `get_f32(index)`: Treat the byte array as an array of f32 values and read the element at the given index.
+    -   `set_f32(index, value)`: Treat the byte array as an array of f32 values and write the element at the given index.
+    -   `num_u32()`: How many `u32` values can fit in this `ByteArray`. Size must be divisible by 4.
+    -   `num_f32()`: How many `f32` values can fit in this `ByteArray`. Size must be divisible by 4.
     -   `memcpy(dst_idx, src_bytes, src_idx, len)`: Copies a block of memory from a source `ByteArray` to this one.
     -   `zero_fill()`: Overwrite the contents of the `ByteArray` with zeros.
+    -   `fill_u32(start_index, count, value)`: Fills a portion of the `ByteArray` with a repeated 32-bit unsigned integer value.
     -   `blit_bgra32(dst_width, dst_height, src, src_width, src_height, dst_x, dst_y)`: Copies a rectangular region from a source `ByteArray` into this `ByteArray` at a specified position, with alpha blending. This method assumes that both the source and destination buffers contain pixel data in the BGRA32 format.
 -   **Dict**
     -   `has(key)`: Check if the dictionary contains this key.
@@ -266,7 +273,7 @@ These host functions are defined in [`src/host.rs`](/src/host.rs):
 
 ## Concurrency with Actors
 
-Plush supports actor-based concurrency, which allows you to write parallel programs that are safe and easy to reason about. Actors are independent processes that communicate by sending and receiving messages.
+Plush supports actor-based concurrency, which allows you to write parallel programs that are safe and easy to reason about. Actors are independent processes that communicate by sending and receiving messages. A parent actor can spawn a child actor using the `$actor_spawn(f)` host function. This function takes a function as argument to be executed in the new actor. Actors work like isolated process and can only communicate through message passing. When an actor spawns a child, the child gets a copy of the parent's global variables.
 
 ```plush
 fun worker() {

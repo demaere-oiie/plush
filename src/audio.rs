@@ -1,11 +1,13 @@
+use rustc_hash::FxHashMap as HashMap;
 use sdl2::audio::{AudioCallback, AudioSpecDesired, AudioDevice};
 use std::sync::{Arc, Weak, Mutex, Condvar};
-use std::collections::HashMap;
-use crate::vm::{Value, VM, Actor, Object, Message};
+use crate::vm::{Value, VM, Actor, Message};
+use crate::object::Object;
 use crate::alloc::Alloc;
 use crate::ast::{AUDIO_NEEDED_ID, AUDIO_DATA_ID};
 use crate::window::with_sdl_context;
 use crate::bytearray::ByteArray;
+use crate::*;
 
 // --- Audio Output ---
 
@@ -43,7 +45,7 @@ impl OutputCB
 
         // Create the AudioNeeded object
         let obj = {
-            let mut obj_val = msg_alloc.new_object(AUDIO_NEEDED_ID, 3).unwrap();
+            let mut obj_val = Object::new(AUDIO_NEEDED_ID, 3, &mut msg_alloc).unwrap();
             let obj = obj_val.unwrap_obj();
             obj.set(0, Value::from(num_samples));
             obj.set(1, Value::from(self.num_channels));
@@ -113,8 +115,8 @@ pub fn audio_open_output(actor: &mut Actor, sample_rate: Value, num_channels: Va
         }
     }
 
-    let sample_rate = sample_rate.unwrap_u32();
-    let num_channels = num_channels.unwrap_u32();
+    let sample_rate = unwrap_u32!(sample_rate);
+    let num_channels = unwrap_u32!(num_channels);
 
     if sample_rate != 44100 && sample_rate != 8000 {
         return Err("for now, only 44100Hz or 8000Hz sample rates supported".into());
@@ -161,7 +163,7 @@ pub fn audio_open_output(actor: &mut Actor, sample_rate: Value, num_channels: Va
 /// The samples must be a ByteArray containing float32 values
 pub fn audio_write_samples(actor: &mut Actor, device_id: Value, samples: Value) -> Result<Value, String>
 {
-    let device_id = device_id.unwrap_usize();
+    let device_id = unwrap_usize!(device_id);
 
     if device_id != 0 {
         return Err("for now, only one audio output device is supported".into());
@@ -183,7 +185,7 @@ pub fn audio_write_samples(actor: &mut Actor, device_id: Value, samples: Value) 
     // We need to iterate and read f32 values
     let num_samples = samples_ba.num_bytes() / std::mem::size_of::<f32>();
     for i in 0..num_samples {
-        state.out_queue.push(samples_ba.load::<f32>(i));
+        state.out_queue.push(samples_ba.get::<f32>(i));
     }
 
     // Notify the audio thread that samples are available
@@ -228,7 +230,7 @@ impl InputCB
 
         // Create the AudioData object
         let obj = {
-            let mut obj_val = msg_alloc.new_object(AUDIO_DATA_ID, 2).unwrap();
+            let mut obj_val = Object::new(AUDIO_DATA_ID, 2, &mut msg_alloc).unwrap();
             let obj = obj_val.unwrap_obj();
             obj.set(0, Value::from(device_id));
             obj.set(1, Value::from(num_samples));
@@ -304,8 +306,8 @@ pub fn audio_open_input(actor: &mut Actor, sample_rate: Value, num_channels: Val
         }
     }
 
-    let sample_rate = sample_rate.unwrap_u32();
-    let num_channels = num_channels.unwrap_u32();
+    let sample_rate = unwrap_u32!(sample_rate);
+    let num_channels = unwrap_u32!(num_channels);
 
     if sample_rate != 44100 {
         panic!("for now, only 44100Hz sample rate supported");
@@ -349,9 +351,9 @@ pub fn audio_open_input(actor: &mut Actor, sample_rate: Value, num_channels: Val
 /// Read samples from an audio input device into an existing ByteArray
 pub fn audio_read_samples(actor: &mut Actor, device_id: Value, num_samples: Value, dst_ba: Value, dst_idx: Value) -> Result<Value, String>
 {
-    let device_id = device_id.unwrap_usize();
-    let num_samples_to_read = num_samples.unwrap_usize();
-    let dst_idx_f32 = dst_idx.unwrap_usize();
+    let device_id = unwrap_usize!(device_id);
+    let num_samples_to_read = unwrap_usize!(num_samples);
+    let dst_idx_f32 = unwrap_usize!(dst_idx);
 
     if device_id != 0 {
         panic!("for now, only one audio input device is supported");

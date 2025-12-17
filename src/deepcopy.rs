@@ -1,8 +1,11 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::hash::{Hash, Hasher};
 use std::mem;
+use std::collections::hash_map::Entry;
 use crate::alloc::Alloc;
-use crate::vm::{Value, Closure, Object};
+use crate::object::Object;
+use crate::closure::Closure;
+use crate::vm::Value;
 
 /// Custom Hash implementation for Value
 impl Hash for Value
@@ -79,8 +82,11 @@ pub fn deepcopy(
     while stack.len() > 0 {
         let val = stack.pop().unwrap();
 
+        // Search dst map for existing mapping entry
+        let dst_map_entry = dst_map.entry(val);
+
         // If this value has already been remapped, skip it
-        if dst_map.contains_key(&val) {
+        if let Entry::Occupied(_) = dst_map_entry {
             continue;
         }
 
@@ -93,28 +99,22 @@ pub fn deepcopy(
             }
 
             Value::Closure(p) => {
-                let new_clos = unsafe { (*p).clone() };
+                let clos = unsafe { &*p };
+                let mut new_clos = Closure::new(clos.fun_id, clos.num_slots(), dst_alloc)?;
+                let mut new_clos = new_clos.unwrap_clos();
 
-                for val in &new_clos.slots {
-                    push_val!(val);
+                for i in 0..clos.num_slots() {
+                    let val = clos.get(i);
+                    new_clos.set(i, val);
+                    push_val!(&val);
                 }
 
-                Value::Closure(dst_alloc.alloc(new_clos)?)
-            }
-
-            Value::Dict(p) => {
-                let new_obj = unsafe { (*p).clone() };
-
-                for val in new_obj.hash.values() {
-                    push_val!(val);
-                }
-
-                Value::Dict(dst_alloc.alloc(new_obj)?)
+                Value::Closure(new_clos)
             }
 
             Value::Object(p) => {
                 let obj = unsafe { &*p };
-                let mut new_obj = dst_alloc.new_object(obj.class_id, obj.num_slots())?;
+                let mut new_obj = Object::new(obj.class_id, obj.num_slots(), dst_alloc)?;
                 let mut new_obj = new_obj.unwrap_obj();
 
                 for i in 0..obj.num_slots() {
@@ -124,6 +124,17 @@ pub fn deepcopy(
                 }
 
                 Value::Object(new_obj)
+            }
+
+            Value::Dict(p) => {
+                let new_obj = unsafe { (*p).clone(dst_alloc)? };
+
+                for (key, val) in new_obj.key_values_mut() {
+                    push_val!(&Value::String(*key));
+                    push_val!(val);
+                }
+
+                Value::Dict(dst_alloc.alloc(new_obj)?)
             }
 
             Value::Array(p) => {
@@ -147,7 +158,7 @@ pub fn deepcopy(
         };
 
         // Insert the new mapping into the translation map
-        dst_map.insert(val, new_val);
+        dst_map_entry.or_insert(new_val);
     }
 
     let new_val = *dst_map.get(&src_val).unwrap();
@@ -174,15 +185,20 @@ pub fn remap(dst_map: &mut HashMap<Value, Value>)
 
             Value::Closure(p) => {
                 let clos = unsafe { &mut **p };
-                for slot_val in &mut clos.slots {
-                    remap_val!(slot_val);
+                for i in 0..clos.num_slots() {
+                    let mut val = clos.get(i);
+                    remap_val!(&mut val);
+                    clos.set(i, val);
                 }
             }
 
             Value::Dict(p) => {
                 let dict = unsafe { &mut **p };
-                for val in dict.hash.values_mut() {
+                for (key, val) in dict.key_values_mut() {
                     remap_val!(val);
+                    let mut key_val = Value::String(*key);
+                    remap_val!(&mut key_val);
+                    *key = key_val.unwrap_str();
                 }
             }
 
@@ -219,7 +235,7 @@ mod tests
     fn copy_int()
     {
         let mut dst_alloc = Alloc::new();
-        let mut dst_map = HashMap::new();
+        let mut dst_map = HashMap::default();
         let v1 = Value::Int64(1337);
         let v2 = deepcopy(v1, &mut dst_alloc, &mut dst_map).unwrap();
         assert!(v1 == v2);
@@ -230,7 +246,7 @@ mod tests
     {
         let mut src_alloc = Alloc::new();
         let mut dst_alloc = Alloc::new();
-        let mut dst_map = HashMap::new();
+        let mut dst_map = HashMap::default();
         let s1 = src_alloc.str_val("foo").unwrap();
         let s2 = deepcopy(s1, &mut dst_alloc, &mut dst_map).unwrap();
         assert!(s1 == s2);

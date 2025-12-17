@@ -1,3 +1,15 @@
+let COLOR_BLACK     = 0xFF_00_00_00;
+let COLOR_WHITE     = 0xFF_FF_FF_FF;
+let COLOR_GREY      = 0xFF_80_80_80;
+let COLOR_RED       = 0xFF_FF_00_00;
+let COLOR_GREEN     = 0xFF_00_FF_00;
+let COLOR_BLUE      = 0xFF_00_00_FF;
+let COLOR_ORANGE    = 0xFF_FF_A5_00;
+let COLOR_YELLOW    = 0xFF_FF_FF_00;
+let COLOR_MAGENTA   = 0xFF_FF_00_FF;
+let COLOR_PURPLE    = 0xFF_D6_00_FF;
+let COLOR_TURQUOISE = 0xFF_40_E0_D0;
+
 fun rgba(r, g, b, a) {
     return (a << 24) | (r << 16) | (g << 8) | b;
 }
@@ -32,13 +44,13 @@ class Image
     get_pixel(self, x, y)
     {
         let idx = y * self.width + x;
-        return(self.bytes.load_u32(idx));
+        return(self.bytes.get_u32(idx));
     }
 
     set_pixel(self, x, y, color)
     {
         let idx = y * self.width + x;
-        self.bytes.store_u32(idx, color);
+        self.bytes.set_u32(idx, color);
     }
 
     // Copy a source image into this image at a given position

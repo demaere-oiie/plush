@@ -1,6 +1,6 @@
 use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 use crate::str::Str;
-use crate::vm::{Value, Object};
+use crate::vm::Value;
 use crate::ast::ClassId;
 
 pub struct Alloc
@@ -51,10 +51,22 @@ impl Alloc
         self.mem_size - self.next_idx
     }
 
+    /// Clear/erase all allocations
+    pub fn clear(&mut self)
+    {
+        // Clear the memory up to the next allocation index
+        // Some objects rely on uninitialized memory being zero
+        unsafe { std::ptr::write_bytes(self.mem_block, 0, self.next_idx) }
+
+        // Reset the next allocation index
+        self.next_idx = 0;
+    }
+
     /// Shrink the available memory to a smaller size
     /// This is primarily used to test the GC
     pub fn shrink_to(&mut self, new_size: usize)
     {
+        assert!(new_size <= self.mem_size);
         assert!(self.next_idx <= new_size);
         self.mem_size = new_size;
 
@@ -103,21 +115,6 @@ impl Alloc
         Ok(p)
     }
 
-    /// Allocate a new object with a given number of slots
-    pub fn new_object(&mut self, class_id: ClassId, num_slots: usize) -> Result<Value, ()>
-    {
-        // Allocate the slots for the object
-        let slots = self.alloc_table::<Value>(num_slots)?;
-
-        // Create the Object struct
-        let obj = Object::new(class_id, slots);
-
-        // Allocate the Object struct itself
-        let obj_ptr = self.alloc(obj)?;
-
-        Ok(Value::Object(obj_ptr))
-    }
-
     pub fn str(&mut self, s: &str) -> Result<*const Str, ()>
     {
         let bytes = self.alloc_bytes(s.len())?;
@@ -141,23 +138,20 @@ impl Alloc
     }
 }
 
-impl Drop for Alloc
-{
-    fn drop(&mut self)
-    {
-        //println!("dropping alloc");
-
-        // In debug mode, fill the allocator's memory with 0xFE when dropping so that
-        // we can find out quickly if any memory did not get copied in a GC cycle
-        #[cfg(debug_assertions)]
-        unsafe { std::ptr::write_bytes(self.mem_block, 0xFEu8, self.mem_size) }
-
-        // Deallocate the memory block
-        unsafe { dealloc(self.mem_block, self.layout) };
-    }
-}
-
 // Allow sending allocators between threads
 // This is needed for the message allocator
 unsafe impl Send for Alloc {}
 unsafe impl Sync for Alloc {}
+
+impl Drop for Alloc
+{
+    fn drop(&mut self)
+    {
+        // In debug mode, fill the allocator's memory with 0xFE when dropping so that
+        // we can find out quickly if any memory did not get copied in a GC cycle
+        #[cfg(debug_assertions)]
+        unsafe { std::ptr::write_bytes(self.mem_block, 0xFEu8, self.mem_size) }
+        // Deallocate the memory block
+        unsafe { dealloc(self.mem_block, self.layout) };
+    }
+}

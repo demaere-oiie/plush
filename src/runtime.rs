@@ -3,7 +3,7 @@ use crate::array::Array;
 use crate::ast::*;
 use crate::vm::{Value, Actor};
 use crate::str::Str;
-use crate::{error, unwrap_usize, unwrap_str};
+use crate::*;
 
 fn identity_method(actor: &mut Actor, self_val: Value) -> Result<Value, String>
 {
@@ -27,36 +27,46 @@ fn nil_to_s(actor: &mut Actor, _v: Value) -> Result<Value, String>
 
 fn int64_abs(actor: &mut Actor, v: Value) -> Result<Value, String>
 {
-    let v = v.unwrap_i64();
+    let v = unwrap_i64!(v);
     Ok(Value::Int64(if v > 0 { v } else { -v }))
 }
 
 fn int64_min(actor: &mut Actor, v: Value, other: Value) -> Result<Value, String>
 {
-    let v = v.unwrap_i64();
-    let other = other.unwrap_i64();
+    let v = unwrap_i64!(v);
+    let other = unwrap_i64!(other);
     Ok(Value::Int64(v.min(other)))
 }
 
 fn int64_max(actor: &mut Actor, v: Value, other: Value) -> Result<Value, String>
 {
-    let v = v.unwrap_i64();
-    let other = other.unwrap_i64();
+    let v = unwrap_i64!(v);
+    let other = unwrap_i64!(other);
     Ok(Value::Int64(v.max(other)))
 }
 
 fn int64_to_f(actor: &mut Actor, v: Value) -> Result<Value, String>
 {
-    let v = v.unwrap_i64();
+    let v = unwrap_i64!(v);
     Ok(Value::Float64(v as f64))
 }
 
 fn int64_to_s(actor: &mut Actor, v: Value) -> Result<Value, String>
 {
-    let v = v.unwrap_i64();
+    let v = unwrap_i64!(v);
     let s = format!("{}", v);
 
     actor.gc_check(32, &mut []);
+    Ok(actor.alloc.str_val(&s).unwrap())
+}
+
+fn int64_to_hex(actor: &mut Actor, v: Value, digits: Value) -> Result<Value, String>
+{
+    let v = unwrap_i64!(v);
+    let digits = unwrap_usize!(digits);
+    let s = format!("{:0width$X}", v, width = digits);
+
+    actor.gc_check(32 + digits, &mut []);
     Ok(actor.alloc.str_val(&s).unwrap())
 }
 
@@ -185,7 +195,7 @@ fn string_from_codepoint(actor: &mut Actor, _class: Value, codepoint: Value) -> 
     // at least for ASCII character values, we can
     // easily intern those strings
 
-    let codepoint = codepoint.unwrap_u32();
+    let codepoint = unwrap_u32!(codepoint);
     let ch = char::from_u32(codepoint).expect("Invalid Unicode codepoint");
 
     let mut s = String::new();
@@ -237,10 +247,21 @@ fn string_char_at(actor: &mut Actor, s: Value, byte_idx: Value) -> Result<Value,
 fn string_parse_int(actor: &mut Actor, s: Value, radix: Value) -> Result<Value, String>
 {
     let s = unwrap_str!(s);
-    let radix = radix.unwrap_u32();
+    let radix = unwrap_u32!(radix);
 
     match i64::from_str_radix(s, radix) {
         Ok(int_val) => Ok(Value::from(int_val)),
+        Err(_) => Ok(Value::Nil),
+    }
+}
+
+/// Try to parse the string as a float
+fn string_parse_float(actor: &mut Actor, s: Value) -> Result<Value, String>
+{
+    let s = unwrap_str!(s);
+
+    match s.parse::<f64>() {
+        Ok(float_val) => Ok(Value::from(float_val)),
         Err(_) => Ok(Value::Nil),
     }
 }
@@ -254,12 +275,34 @@ fn string_trim(actor: &mut Actor, s: Value) -> Result<Value, String>
     Ok(actor.alloc.str_val(&s).unwrap())
 }
 
+/// Uppercase a String
+fn string_upper(actor: &mut Actor, s: Value) -> Result<Value, String>
+{
+    let s = unwrap_str!(s);
+    let s = s.to_uppercase();
+    actor.gc_check(size_of::<Str>() + s.len(), &mut []);
+    Ok(actor.alloc.str_val(&s).unwrap())
+}
+
+/// Lowercase a String
+fn string_lower(actor: &mut Actor, s: Value) -> Result<Value, String>
+{
+    let s = unwrap_str!(s);
+    let s = s.to_lowercase();
+    actor.gc_check(size_of::<Str>() + s.len(), &mut []);
+    Ok(actor.alloc.str_val(&s).unwrap())
+}
+
 /// Split a string by a separator and return an array of strings
 fn string_split(actor: &mut Actor, mut input: Value, sep: Value) -> Result<Value, String>
 {
     let s = unwrap_str!(input);
     let sep = unwrap_str!(sep);
 
+    // Copy the input in case we have to trigger GC
+    let s = s.to_owned();
+
+    // Split the string into tokens
     let str_parts: Vec<&str> = s.split(sep).collect();
     let num_strs = str_parts.len();
     let total_str_len: usize = str_parts.iter().map(|s| s.len()).sum();
@@ -270,7 +313,7 @@ fn string_split(actor: &mut Actor, mut input: Value, sep: Value) -> Result<Value
         (size_of::<Array>() + num_strs * size_of::<Value>()) +
         (size_of::<Str>() + 32) * num_strs +
         total_str_len,
-        &mut [&mut input]
+        &mut []
     );
 
     let mut array = Array::with_capacity(num_strs, &mut actor.alloc).unwrap();
@@ -346,6 +389,7 @@ pub fn get_method(val: Value, method_name: &str) -> Value
     static INT64_MAX: HostFn = HostFn { name: "max", f: Fn2(int64_max) };
     static INT64_TO_F: HostFn = HostFn { name: "to_f", f: Fn1(int64_to_f) };
     static INT64_TO_S: HostFn = HostFn { name: "to_s", f: Fn1(int64_to_s) };
+    static INT64_TO_HEX: HostFn = HostFn { name: "to_hex", f: Fn2(int64_to_hex) };
 
     static FLOAT64_ABS: HostFn = HostFn { name: "abs", f: Fn1(float64_abs) };
     static FLOAT64_CEIL: HostFn = HostFn { name: "ceil", f: Fn1(float64_ceil) };
@@ -370,7 +414,10 @@ pub fn get_method(val: Value, method_name: &str) -> Value
     static STRING_BYTE_AT: HostFn = HostFn { name: "byte_at", f: Fn2(string_byte_at) };
     static STRING_CHAR_AT: HostFn = HostFn { name: "char_at", f: Fn2(string_char_at) };
     static STRING_PARSE_INT: HostFn = HostFn { name: "parse_int", f: Fn2(string_parse_int) };
+    static STRING_PARSE_FLOAT: HostFn = HostFn { name: "parse_float", f: Fn1(string_parse_float) };
     static STRING_TRIM: HostFn = HostFn { name: "trim", f: Fn1(string_trim) };
+    static STRING_UPPER: HostFn = HostFn { name: "upper", f: Fn1(string_upper) };
+    static STRING_LOWER: HostFn = HostFn { name: "lower", f: Fn1(string_lower) };
     static STRING_SPLIT: HostFn = HostFn { name: "split", f: Fn2(string_split) };
     static STRING_TO_S: HostFn = HostFn { name: "to_s", f: Fn1(identity_method) };
 
@@ -382,16 +429,21 @@ pub fn get_method(val: Value, method_name: &str) -> Value
     static ARRAY_APPEND: HostFn = HostFn { name: "append", f: Fn2(array_append) };
 
     static BA_WITH_SIZE: HostFn = HostFn { name: "with_size", f: Fn2(ba_with_size) };
-    static BA_FILL_U32: HostFn = HostFn { name: "fill_u32", f: Fn4(ba_fill_u32) };
     static BA_READ_U32: HostFn = HostFn { name: "load_u32", f: Fn2(ba_load_u32) };
     static BA_WRITE_U32: HostFn = HostFn { name: "store_u32", f: Fn3(ba_store_u32) };
     static BA_READ_U16: HostFn = HostFn { name: "load_u16", f: Fn2(ba_load_u16) };
     static BA_WRITE_U16: HostFn = HostFn { name: "store_u16", f: Fn3(ba_store_u16) };
     static BA_READ_F32: HostFn = HostFn { name: "load_f32", f: Fn2(ba_load_f32) };
     static BA_WRITE_F32: HostFn = HostFn { name: "store_f32", f: Fn3(ba_store_f32) };
+    static BA_GET_U32: HostFn = HostFn { name: "get_u32", f: Fn2(ba_get_u32) };
+    static BA_SET_U32: HostFn = HostFn { name: "set_u32", f: Fn3(ba_set_u32) };
+    static BA_GET_F32: HostFn = HostFn { name: "get_f32", f: Fn2(ba_get_f32) };
+    static BA_SET_F32: HostFn = HostFn { name: "set_f32", f: Fn3(ba_set_f32) };
+    static BA_NUM_U32: HostFn = HostFn { name: "num_u32", f: Fn1(ba_num_u32) };
     static BA_MEMCPY: HostFn = HostFn { name: "memcpy", f: Fn5(ba_memcpy) };
     static BA_RESIZE: HostFn = HostFn { name: "resize", f: Fn2(ba_resize) };
     static BA_ZERO_FILL: HostFn = HostFn { name: "zero_fill", f: Fn1(ba_zero_fill) };
+    static BA_FILL_U32: HostFn = HostFn { name: "fill_u32", f: Fn4(ba_fill_u32) };
     static BA_BLIT_BGRA32: HostFn = HostFn { name: "blit_bgra32", f: Fn8(ba_blit_bgra32) };
 
     static DICT_HAS: HostFn = HostFn { name: "has", f: Fn2(dict_has) };
@@ -402,6 +454,7 @@ pub fn get_method(val: Value, method_name: &str) -> Value
         (Value::Int64(_), "max") => &INT64_MAX,
         (Value::Int64(_), "to_f") => &INT64_TO_F,
         (Value::Int64(_), "to_s") => &INT64_TO_S,
+        (Value::Int64(_), "to_hex") => &INT64_TO_HEX,
 
         (Value::Float64(_), "abs") => &FLOAT64_ABS,
         (Value::Float64(_), "ceil") => &FLOAT64_CEIL,
@@ -426,7 +479,10 @@ pub fn get_method(val: Value, method_name: &str) -> Value
         (Value::String(_), "byte_at") => &STRING_BYTE_AT,
         (Value::String(_), "char_at") => &STRING_CHAR_AT,
         (Value::String(_), "parse_int") => &STRING_PARSE_INT,
+        (Value::String(_), "parse_float") => &STRING_PARSE_FLOAT,
         (Value::String(_), "trim") => &STRING_TRIM,
+        (Value::String(_), "upper") => &STRING_UPPER,
+        (Value::String(_), "lower") => &STRING_LOWER,
         (Value::String(_), "split") => &STRING_SPLIT,
         (Value::String(_), "to_s") => &STRING_TO_S,
 
@@ -438,16 +494,22 @@ pub fn get_method(val: Value, method_name: &str) -> Value
         (Value::Array(_), "append") => &ARRAY_APPEND,
 
         (Value::Class(BYTEARRAY_ID), "with_size") => &BA_WITH_SIZE,
-        (Value::ByteArray(_), "fill_u32") => &BA_FILL_U32,
         (Value::ByteArray(_), "load_u32") => &BA_READ_U32,
         (Value::ByteArray(_), "store_u32") => &BA_WRITE_U32,
         (Value::ByteArray(_), "load_u16") => &BA_READ_U16,
         (Value::ByteArray(_), "store_u16") => &BA_WRITE_U16,
         (Value::ByteArray(_), "load_f32") => &BA_READ_F32,
         (Value::ByteArray(_), "store_f32") => &BA_WRITE_F32,
+        (Value::ByteArray(_), "get_u32") => &BA_GET_U32,
+        (Value::ByteArray(_), "set_u32") => &BA_SET_U32,
+        (Value::ByteArray(_), "get_f32") => &BA_GET_F32,
+        (Value::ByteArray(_), "set_f32") => &BA_SET_F32,
+        (Value::ByteArray(_), "num_u32") => &BA_NUM_U32,
+        (Value::ByteArray(_), "num_f32") => &BA_NUM_U32,
         (Value::ByteArray(_), "memcpy") => &BA_MEMCPY,
         (Value::ByteArray(_), "resize") => &BA_RESIZE,
         (Value::ByteArray(_), "zero_fill") => &BA_ZERO_FILL,
+        (Value::ByteArray(_), "fill_u32") => &BA_FILL_U32,
         (Value::ByteArray(_), "blit_bgra32") => &BA_BLIT_BGRA32,
 
         (Value::Dict(_), "has") => &DICT_HAS,

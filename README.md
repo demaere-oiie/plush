@@ -3,10 +3,10 @@
 <p align="center">
     <img src="media/city.png" height=180>&nbsp;
     <img src="media/mondrian.png" height=180>&nbsp;
-    <img src="media/spectrum.png" height=180>
+    <img src="media/amigaball.png" height=180>
 </p>
 
-Plush is an experimental language and virtual machine for fun, teaching and creative programming.
+Plush is a toy programming language and virtual machine for fun, teaching and creative programming.
 It follows a minimalistic design philosphy and draws inspiration from JavaScript, Lox, Lua, Python and Rust.
 Plush supports actor-based parallelism and is designed such that there is no global VM lock.
 The language has straightforward semantics and is built around a simple stack-based interpreter. The codebase is well-commented, has very few depencencies, and good cross-platform support. It has been tested on Linux, Mac and Windows.

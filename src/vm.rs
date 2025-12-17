@@ -1,11 +1,14 @@
-use std::collections::{HashSet, HashMap};
+use rustc_hash::FxHashMap as HashMap;
 use std::{thread, thread::sleep};
 use std::sync::{Arc, Weak, Mutex, mpsc};
 use std::time::Duration;
+use crate::dict::Dict;
 use crate::utils::thousands_sep;
 use crate::lexer::SrcPos;
 use crate::ast::{Program, FunId, ClassId, Class};
 use crate::alloc::Alloc;
+use crate::object::Object;
+use crate::closure::Closure;
 use crate::array::Array;
 use crate::bytearray::ByteArray;
 use crate::codegen::CompiledFun;
@@ -172,81 +175,6 @@ pub enum Insn
     ret,
 }
 
-#[derive(Clone)]
-pub struct Closure
-{
-    pub fun_id: FunId,
-
-    // Captured variable slots
-    pub slots: Vec<Value>,
-}
-
-#[derive(Clone)]
-pub struct Object
-{
-    pub class_id: ClassId,
-    slots: *mut [Value],
-}
-
-impl Object
-{
-    pub fn new(class_id: ClassId, slots: *mut [Value]) -> Self
-    {
-        Object {
-            class_id,
-            slots,
-        }
-    }
-
-    pub fn num_slots(&self) -> usize
-    {
-        unsafe { (&*self.slots).len() }
-    }
-
-    // Get the value associated with a given field
-    pub fn get(&self, idx: usize) -> Value
-    {
-        unsafe { (*self.slots)[idx] }
-    }
-
-    // Set the value of a given field
-    pub fn set(&mut self, idx: usize, val: Value)
-    {
-        unsafe { (*self.slots)[idx] = val }
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct Dict
-{
-    pub hash: HashMap<String, Value>,
-}
-
-impl Dict
-{
-    // Set the value associated with a given field
-    fn set(&mut self, field_name: &str, new_val: Value)
-    {
-        self.hash.insert(field_name.to_string(), new_val);
-    }
-
-    // Get the value associated with a given field
-    fn get(&mut self, field_name: &str) -> Value
-    {
-        if let Some(val) = self.hash.get(field_name) {
-            *val
-        } else {
-            panic!("key `{}` not found in dict", field_name);
-        }
-    }
-
-    // Check if the dictionary has a given key
-    pub fn has(&mut self, field_name: &str) -> bool
-    {
-        self.hash.contains_key(field_name)
-    }
-}
-
 #[derive(Copy, Clone, Debug)]
 pub enum Value
 {
@@ -311,30 +239,6 @@ impl Value
         }
     }
 
-    pub fn unwrap_usize(&self) -> usize
-    {
-        match self {
-            Int64(v) => (*v).try_into().unwrap(),
-            _ => panic!("expected int64 value but got {:?}", self)
-        }
-    }
-
-    pub fn unwrap_u64(&self) -> u64
-    {
-        match self {
-            Int64(v) => (*v).try_into().unwrap(),
-            _ => panic!("expected int64 value but got {:?}", self)
-        }
-    }
-
-    pub fn unwrap_u32(&self) -> u32
-    {
-        match self {
-            Int64(v) => (*v).try_into().unwrap(),
-            _ => panic!("expected int64 value but got {:?}", self)
-        }
-    }
-
     pub fn unwrap_u8(&self) -> u8
     {
         match self {
@@ -347,14 +251,6 @@ impl Value
     {
         match self {
             Int64(v) => (*v).try_into().unwrap(),
-            _ => panic!("expected int64 value but got {:?}", self)
-        }
-    }
-
-    pub fn unwrap_i64(&self) -> i64
-    {
-        match self {
-            Int64(v) => *v,
             _ => panic!("expected int64 value but got {:?}", self)
         }
     }
@@ -372,6 +268,14 @@ impl Value
         match self {
             Value::Object(p) => unsafe { &mut **p },
             _ => panic!("expected object value but got {:?}", self)
+        }
+    }
+
+    pub fn unwrap_clos(&mut self) -> &mut Closure
+    {
+        match self {
+            Value::Closure(p) => unsafe { &mut **p },
+            _ => panic!("expected closure value but got {:?}", self)
         }
     }
 
@@ -395,6 +299,14 @@ impl Value
     {
         match self {
             Value::Dict(p) => unsafe { &mut **p },
+            _ => panic!("expected dict value but got {:?}", self)
+        }
+    }
+
+    pub fn unwrap_str(&mut self) -> &Str
+    {
+        match self {
+            Value::String(p) => unsafe { &**p },
             _ => panic!("expected dict value but got {:?}", self)
         }
     }
@@ -423,6 +335,48 @@ macro_rules! unwrap_i64 {
     // To be used by host functions
     ($val: expr) => {
         unwrap_i64!($val, "")
+    }
+}
+
+#[macro_export]
+macro_rules! unwrap_u32 {
+    // To be used inside the interpreter loop
+    ($val: expr, $requester: literal) => {
+        match $val {
+            Value::Int64(v) => {
+                match u32::try_from(v) {
+                    Ok(v) => v,
+                    Err(_) => error!($requester, "integer value doesn't fit into u32 range")
+                }
+            },
+            _ => error!($requester, "expected int64 value but got {:?}", $val)
+        }
+    };
+
+    // To be used by host functions
+    ($val: expr) => {
+        unwrap_u32!($val, "")
+    }
+}
+
+#[macro_export]
+macro_rules! unwrap_u64 {
+    // To be used inside the interpreter loop
+    ($val: expr, $requester: literal) => {
+        match $val {
+            Value::Int64(v) => {
+                if (v < 0) {
+                    error!($requester, "expected non-negative integer but got {:?}", v)
+                }
+                v as u64
+            },
+            _ => error!($requester, "expected int64 value but got {:?}", $val)
+        }
+    };
+
+    // To be used by host functions
+    ($val: expr) => {
+        unwrap_u64!($val, "")
     }
 }
 
@@ -478,7 +432,7 @@ impl PartialEq for Value
 
             // For strings, we do a structural equality comparison, so
             // that some strings can be interned (deduplicated)
-            (String(p1), String(p2))    => unsafe { (**p1).as_str() == (**p2).as_str() },
+            (String(p1), String(p2))    => p1 == p2 || unsafe { (**p1).as_str() == (**p2).as_str() },
 
             // For int & float, we may need type conversions
             (Float64(a), Int64(b))      => *a == *b as f64,
@@ -601,6 +555,12 @@ pub struct Actor
     // Message queue receiver endpoint
     queue_rx: mpsc::Receiver<Message>,
 
+    // Spare allocator used as to-space for copying GC
+    to_space: Option<Alloc>,
+
+    // Hash map used for garbage collection
+    dst_map: HashMap::<Value, Value>,
+
     // Cache of actor ids to message queue endpoints
     actor_map: HashMap<u64, ActorTx>,
 
@@ -642,6 +602,8 @@ impl Actor
             msg_alloc,
             queue_rx,
             globals,
+            to_space: None,
+            dst_map: HashMap::default(),
             actor_map: HashMap::default(),
             stack: Vec::default(),
             frames: Vec::default(),
@@ -718,7 +680,7 @@ impl Actor
             println!("Performing message allocator GC");
 
             // Clear the contents of the message allocator
-            *msg_alloc = Alloc::with_size(msg_alloc.mem_size());
+            msg_alloc.clear();
         }
 
         // No message received
@@ -752,7 +714,7 @@ impl Actor
             Some(rc) => rc,
             None => return Err(()),
         };
-        let mut dst_map = HashMap::new();
+        let mut dst_map = HashMap::default();
         let msg = deepcopy(msg, alloc_rc.lock().as_mut().unwrap(), &mut dst_map).unwrap();
         remap(&mut dst_map);
 
@@ -809,6 +771,12 @@ impl Actor
         ret
     }
 
+    /// Get the class name for a given class
+    pub fn get_class_name(&mut self, class_id: ClassId) -> String
+    {
+        self.with_class(class_id, |c| c.name.clone())
+    }
+
     /// Get the number of slots for a given class
     pub fn get_num_slots(&mut self, class_id: ClassId) -> usize
     {
@@ -849,7 +817,7 @@ impl Actor
             &mut []
         );
 
-        self.alloc.new_object(class_id, num_slots).unwrap()
+        Object::new(class_id, num_slots, &mut self.alloc).unwrap()
     }
 
     /// Set the value of an object field
@@ -885,30 +853,29 @@ impl Actor
         fn try_copy(
             actor: &mut Actor,
             dst_alloc: &mut Alloc,
-            dst_map: &mut HashMap<Value, Value>,
             extra_roots: &mut [&mut Value],
         ) -> Result<(), ()>
         {
             // Copy the global variables
             for val in &mut actor.globals {
-                deepcopy(*val, dst_alloc, dst_map)?;
+                deepcopy(*val, dst_alloc, &mut actor.dst_map)?;
             }
 
             // Copy values on the stack
             for val in &mut actor.stack {
-                deepcopy(*val, dst_alloc, dst_map)?;
+                deepcopy(*val, dst_alloc, &mut actor.dst_map)?;
             }
 
             // Copy closures in the stack frames
             for frame in &mut actor.frames {
-                deepcopy(frame.fun, dst_alloc, dst_map)?;
+                deepcopy(frame.fun, dst_alloc, &mut actor.dst_map)?;
             }
 
             // Copy heap values referenced in instructions
             for insn in &mut actor.insns {
                 match insn {
                     Insn::push { val } => {
-                        deepcopy(*val, dst_alloc, dst_map)?;
+                        deepcopy(*val, dst_alloc, &mut actor.dst_map)?;
                     }
 
                     // Instructions referencing name strings
@@ -916,7 +883,7 @@ impl Actor
                     Insn::set_field { field: s, .. } |
                     Insn::call_method { name: s, .. } |
                     Insn::call_method_pc { name: s, .. } => {
-                        deepcopy(Value::String(*s), dst_alloc, dst_map)?;
+                        deepcopy(Value::String(*s), dst_alloc, &mut actor.dst_map)?;
                     }
 
                     _ => {}
@@ -925,16 +892,16 @@ impl Actor
 
             // Copy extra roots supplied by the user
             for val in extra_roots {
-                deepcopy(**val, dst_alloc, dst_map)?;
+                deepcopy(**val, dst_alloc, &mut actor.dst_map)?;
             }
 
             println!(
                 "GC copied {} values, {} bytes free",
-                thousands_sep(dst_map.len()),
+                thousands_sep(actor.dst_map.len()),
                 thousands_sep(dst_alloc.bytes_free()),
             );
 
-            remap(dst_map);
+            remap(&mut actor.dst_map);
 
             Ok(())
         }
@@ -954,18 +921,24 @@ impl Actor
 
         let mut new_mem_size = self.alloc.mem_size();
 
-        // Create a new allocator to copy the data into
-        let mut dst_alloc = Alloc::with_size(new_mem_size);
-
-        // Hash map for remapping copied values
-        let mut dst_map = HashMap::<Value, Value>::new();
+        // Get a new allocator to copy the data into
+        let mut dst_alloc = if self.to_space.is_some() {
+            let alloc = self.to_space.take().unwrap();
+            if alloc.mem_size() >= new_mem_size {
+                alloc
+            } else {
+                Alloc::with_size(new_mem_size)
+            }
+        } else {
+            Alloc::with_size(new_mem_size)
+        };
 
         loop {
             // Clear the value map
-            dst_map.clear();
+            self.dst_map.clear();
 
             // Try to copy all objects into the new allocator
-            let copy_fail = try_copy(self, &mut dst_alloc, &mut dst_map, extra_roots).is_err();
+            let copy_fail = try_copy(self, &mut dst_alloc, extra_roots).is_err();
 
             // If there is not enough free memory after copying
             let min_free_bytes = std::cmp::max(self.alloc.mem_size() / 5, bytes_needed);
@@ -998,24 +971,24 @@ impl Actor
 
         // Remap the global variables
         for val in &mut self.globals {
-            *val = get_new_val(*val, &dst_map);
+            *val = get_new_val(*val, &self.dst_map);
         }
 
         // Remap values on the stack
         for val in &mut self.stack {
-            *val = get_new_val(*val, &dst_map);
+            *val = get_new_val(*val, &self.dst_map);
         }
 
         // Remap closures in the stack frames
         for frame in &mut self.frames {
-            frame.fun = get_new_val(frame.fun, &dst_map);
+            frame.fun = get_new_val(frame.fun, &self.dst_map);
         }
 
         // Remap heap values referenced in instructions
         for insn in &mut self.insns {
             match insn {
                 Insn::push { val } => {
-                    *val = get_new_val(*val, &dst_map);
+                    *val = get_new_val(*val, &self.dst_map);
                 }
 
                 // Instructions referencing name strings
@@ -1023,7 +996,7 @@ impl Actor
                 Insn::set_field { field: s, .. } |
                 Insn::call_method { name: s, .. } |
                 Insn::call_method_pc { name: s, .. } => {
-                    match get_new_val(Value::String(*s), &dst_map) {
+                    match get_new_val(Value::String(*s), &self.dst_map) {
                         Value::String(new_s) => *s = new_s,
                         _ => panic!(),
                     }
@@ -1035,13 +1008,13 @@ impl Actor
 
         // Remap extra roots supplied by the user
         for val in extra_roots {
-            **val = get_new_val(**val, &dst_map);
+            **val = get_new_val(**val, &self.dst_map);
         }
 
-        // Drop and replace the old allocator
-        // Note that we can only do this after remapping the values,
-        // because we access string data while hashing string values
-        self.alloc = dst_alloc;
+        // Swap the old and new allocators
+        std::mem::swap(&mut self.alloc, &mut dst_alloc);
+        dst_alloc.clear();
+        self.to_space = Some(dst_alloc);
 
         let end_time = crate::host::get_time_ms();
         let gc_time = end_time - start_time;
@@ -1262,7 +1235,7 @@ impl Actor
                 eprintln!();
 
                 // For each stack frame, from top to bottom
-                for frame in self.frames.iter().rev() {
+                for frame in self.frames.clone().into_iter().rev() {
                     let fun_id = match frame.fun {
                         Value::Fun(id) => id,
                         Value::Closure(clos) => unsafe { (*clos).fun_id },
@@ -1274,7 +1247,15 @@ impl Actor
                     let fun = &vm.prog.funs[&fun_id];
                     let fun_name = fun.name.clone();
                     let fun_pos = fun.pos;
-                    drop(vm);
+                    let fun_class_id = fun.class_id;
+
+                    // If this is a method, prepend the class name
+                    let fun_name = if fun_class_id != ClassId::default() {
+                        let class_name = &vm.prog.classes[&fun_class_id].name;
+                        format!("{}.{}", class_name, fun_name)
+                    } else {
+                        fun_name
+                    };
 
                     eprintln!("{}", fun_name);
                     eprintln!("  defined at {}", fun_pos);
@@ -1714,9 +1695,8 @@ impl Actor
                         &mut [],
                     );
 
-                    let clos = Closure { fun_id, slots: vec![Undef; num_slots] };
-                    let clos_val = self.alloc.alloc(clos).unwrap();
-                    push!(Value::Closure(clos_val));
+                    let clos = Closure::new(fun_id, num_slots, &mut self.alloc).unwrap();
+                    push!(clos);
                 }
 
                 // Set a closure slot
@@ -1727,7 +1707,7 @@ impl Actor
                     match clos {
                         Value::Closure(clos) => {
                             let clos = unsafe { &mut *clos };
-                            clos.slots[idx as usize] = val;
+                            clos.set(idx as usize, val);
                         }
                         _ => error!("clos_set", "expected closure")
                     }
@@ -1740,7 +1720,7 @@ impl Actor
                     let val = match fun {
                         Value::Closure(clos) => {
                             let clos = unsafe { &**clos };
-                            clos.slots[idx as usize]
+                            clos.get(idx as usize)
                         }
                         _ => error!("clos_get", "not a closure")
                     };
@@ -1788,15 +1768,20 @@ impl Actor
 
                 // Create new empty dictionary
                 Insn::dict_new => {
-                    let new_obj = self.alloc.alloc(Dict::default()).unwrap();
+                    self.gc_check(
+                        size_of::<Dict>() + 2 * Dict::size_of_slot(),
+                        &mut []
+                    );
+                    let dict = Dict::with_capacity(0, &mut self.alloc).unwrap();
+                    let new_obj = self.alloc.alloc(dict).unwrap();
                     push!(Value::Dict(new_obj))
                 }
 
                 // Set object field
-                Insn::set_field { field, class_id, slot_idx } => {
-                    let val = pop!();
+                Insn::set_field { mut field, class_id, slot_idx } => {
+                    let mut val = pop!();
                     let mut obj = pop!();
-                    let field_name = unsafe { &*field };
+                    let mut field_name = unsafe { &*field };
 
                     match obj {
                         Value::Object(p) => {
@@ -1821,7 +1806,17 @@ impl Actor
 
                         Value::Dict(p) => {
                             let dict = unsafe { &mut *p };
-                            dict.set(field_name.as_str(), val);
+                            let mut field_name_val = Value::String(field);
+                            let alloc_size = dict.will_allocate(field_name.as_str());
+
+                            self.gc_check(
+                                alloc_size,
+                                &mut [&mut obj, &mut val, &mut field_name_val]
+                            );
+
+                            field_name = field_name_val.unwrap_str();
+                            let dict = obj.unwrap_dict();
+                            dict.set(field_name, val, &mut self.alloc).unwrap();
                         }
 
                         _ => error!("set_field", "set_field on non-object/dict value")
@@ -1839,7 +1834,7 @@ impl Actor
                         &mut [],
                     );
 
-                    let obj_val = self.alloc.new_object(class_id, num_slots).unwrap();
+                    let obj_val = Object::new(class_id, num_slots, &mut self.alloc).unwrap();
 
                     // If a constructor method is present
                     let init_fun = self.get_method(class_id, "init");
@@ -1876,7 +1871,7 @@ impl Actor
                     );
 
                     // Allocate the object
-                    let obj_val = self.alloc.new_object(class_id, num_slots).unwrap();
+                    let obj_val = Object::new(class_id, num_slots, &mut self.alloc).unwrap();
 
                     // The self value should be first argument to the constructor
                     // The constructor also returns the allocated object
@@ -1964,7 +1959,12 @@ impl Actor
 
                         Value::Dict(p) => {
                             let dict = unsafe { &mut *p };
-                            dict.get(field_name.as_str())
+                            let key = field_name.as_str();
+
+                            match dict.get(key) {
+                                Some(v) => v,
+                                None => error!("get_field", "key '{}' not found in dict", key)
+                            }
                         }
 
                         _ => error!("get_field", "get_field on non-object value {:?}", obj)
@@ -1987,13 +1987,17 @@ impl Actor
                         Value::ByteArray(p) => {
                             let ba = unsafe { &mut *p };
                             let idx = unwrap_usize!(idx, "get_index");
-                            Value::from(ba.get(idx))
+                            Value::from(ba.get::<u8>(idx))
                         }
 
                         Value::Dict(p) => {
                             let dict = unsafe { &mut *p };
                             let key = unwrap_str!(idx);
-                            dict.get(key)
+
+                            match dict.get(key) {
+                                Some(v) => v,
+                                None => error!("get_index", "key '{}' not found in dict", key)
+                            }
                         }
 
                         _ => error!("get_index", "expected array or dict type in get_index")
@@ -2003,9 +2007,9 @@ impl Actor
                 }
 
                 Insn::set_index => {
-                    let val = pop!();
-                    let idx = pop!();
-                    let arr = pop!();
+                    let mut val = pop!();
+                    let mut idx = pop!();
+                    let mut arr = pop!();
 
                     match arr {
                         Value::Array(p) => {
@@ -2018,13 +2022,22 @@ impl Actor
                             let ba = unsafe { &mut *p };
                             let idx = unwrap_usize!(idx, "get_index");
                             let b = val.unwrap_u8();
-                            ba.set(idx, b);
+                            ba.set::<u8>(idx, b);
                         }
 
                         Value::Dict(p) => {
                             let dict = unsafe { &mut *p };
                             let key = unwrap_str!(idx);
-                            dict.set(key, val);
+
+                            let alloc_size = dict.will_allocate(key);
+                            self.gc_check(
+                                alloc_size,
+                                &mut [&mut arr, &mut idx, &mut val],
+                            );
+
+                            let dict = arr.unwrap_dict();
+                            let key = idx.unwrap_str();
+                            dict.set(key, val, &mut self.alloc).unwrap();
                         }
 
                         _ => error!("set_index", "expected array or dict type")
@@ -2142,7 +2155,11 @@ impl Actor
                         Value::Object(p) => {
                             let obj = unsafe { &*p };
                             let fun_id = match self.get_method(obj.class_id, method_name.as_str()) {
-                                None => error!("call to method `{}`, not found on class", method_name.as_str()),
+                                None => error!(
+                                    "call to method `{}`, not found on class `{}`",
+                                    method_name.as_str(),
+                                    self.get_class_name(obj.class_id)
+                                ),
                                 Some(fun_id) => fun_id,
                             };
 
@@ -2315,7 +2332,7 @@ impl VM
         let mut msg_alloc = Alloc::new();
 
         // Hash map for remapping copied values
-        let mut dst_map = HashMap::new();
+        let mut dst_map = HashMap::default();
 
         // We need to recursively copy the function/closure
         // using the actor's message allocator
@@ -2790,6 +2807,13 @@ mod tests
         eval_eq("let o = { 'foo bar': 5 }; return o['foo bar'];", Value::Int64(5));
         eval_eq("let o = { x:5 }; o['x'] = 3; return o.x;", Value::Int64(3));
         eval_eq("let o = { x:5 }; return o.has('x');", Value::True);
+    }
+
+    #[test]
+    #[should_panic]
+    fn dict_missing_key()
+    {
+        eval("let v = {}.x;");
     }
 
     #[test]
