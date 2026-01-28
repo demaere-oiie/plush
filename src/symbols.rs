@@ -1,4 +1,5 @@
 use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::FxHashSet as HashSet;
 use crate::lexer::{ParseError, SrcPos};
 use crate::ast::*;
 
@@ -56,7 +57,7 @@ struct Env
     scopes: Vec<Scope>,
 
     // Next global variable slot index to assign
-    next_global_idx: usize,
+    next_global_idx: u32,
 }
 
 impl Env
@@ -98,7 +99,6 @@ impl Env
 
             Decl::Global {
                 idx: global_idx,
-                //src_fun: fun.id,
                 mutable,
             }
         } else {
@@ -159,6 +159,7 @@ impl Program
     pub fn resolve_syms(&mut self) -> Result<(), ParseError>
     {
         let mut env = Env::default();
+        env.next_global_idx = self.num_globals;
         env.push_scope();
 
         // Register core classes
@@ -183,6 +184,101 @@ impl Program
         // Set the number of globals
         self.num_globals = env.next_global_idx;
 
+        // Recursively process the inheritance chain for a given class
+        fn process(
+            class_id: ClassId,
+            classes: &mut HashMap<ClassId, Class>,
+            processed: &mut HashSet<ClassId>,
+            lineage: &mut HashSet<ClassId>,
+        ) -> Result<(), ParseError>
+        {
+            // If we run into an inheritance loop
+            if lineage.contains(&class_id) {
+                return ParseError::with_pos(
+                    &format!(
+                        "class symbol `{}` is part of a circular inheritance loop",
+                        classes[&class_id].name
+                    ),
+                    &classes[&class_id].pos
+                );
+            }
+
+            let parent_id = classes[&class_id].parent_id;
+
+            // If this class has no parent, nothing to do
+            if parent_id == ClassId::default() {
+                return Ok(());
+            }
+
+            // If the parent has not yet been processed
+            if !processed.contains(&parent_id) {
+                // Process the parent class first
+                lineage.insert(class_id);
+                process(parent_id, classes, processed, lineage)?;
+            }
+
+            // Clone the methods and fields of the parent
+            let mut parent_methods = classes[&parent_id].methods.clone();
+            let mut parent_fields = classes[&parent_id].fields.clone();
+
+            let mut class = classes.get_mut(&class_id).unwrap();
+
+            if lineage.len() > 0 {
+                class.has_children = true;
+            }
+
+            // Extend the set of parent methods
+            parent_methods.extend(class.methods.clone());
+
+            // Extend the set of parent fields
+            for (field_name, _) in &class.fields {
+                if parent_fields.contains_key(field_name) {
+                    continue;
+                }
+
+                parent_fields.insert(
+                    field_name.to_string(),
+                    parent_fields.len()
+                );
+            }
+
+            class.methods = parent_methods;
+            class.fields = parent_fields;
+
+            // Mark this class as processed
+            processed.insert(class_id);
+
+            Ok(())
+        }
+
+        // Set of classes that have been processed
+        let mut processed = HashSet::<ClassId>::default();
+
+        // For each class id
+        let classes: Vec<ClassId> = self.classes.keys().cloned().collect();
+        for class_id in classes{
+            // If this class has already been processed, skip it
+            if processed.contains(&class_id) {
+                continue;
+            }
+
+            let class = &self.classes[&class_id];
+
+            // If a class has no parent, nothing to do
+            if class.parent_id == ClassId::default() {
+                processed.insert(class_id);
+                continue;
+            }
+
+            // Process this class and its ancestors
+            process(
+                class_id,
+                &mut self.classes,
+                &mut processed,
+                &mut HashSet::default(),
+            )?;
+        }
+
         Ok(())
     }
 }
@@ -199,14 +295,16 @@ impl Unit
 
             // If we should import all available symbols
             if import.import_all {
-                // If the unit defines this function
                 for (symbol, fun_id) in &unit.funs {
                     env.define(symbol, Decl::Fun { id: *fun_id });
                 }
 
-                // If the unit defines this class
                 for (symbol, class_id) in &unit.classes {
                     env.define(symbol, Decl::Class { id: *class_id });
+                }
+
+                for (symbol, global_idx) in &unit.consts {
+                    env.define(symbol, Decl::Global { idx: *global_idx, mutable: false });
                 }
             }
 
@@ -221,6 +319,12 @@ impl Unit
                 // If the unit defines this class
                 if let Some(class_id) = unit.classes.get(symbol) {
                     env.define(symbol, Decl::Class { id: *class_id });
+                    continue;
+                }
+
+                // If the unit defines this immutable constant
+                if let Some(global_idx) = unit.consts.get(symbol) {
+                    env.define(symbol, Decl::Global { idx: *global_idx, mutable: false });
                     continue;
                 }
 
@@ -346,9 +450,11 @@ impl StmtBox
             Stmt::Let { mutable, var_name, init_expr, decl } => {
                 init_expr.resolve_syms(prog, fun, env)?;
 
-                // Functions have already been pre-declared
                 match init_expr.expr.as_ref() {
+                    // Functions have already been pre-declared
                     Expr::Fun { .. } => {}
+
+                    // Variable declaration
                     _ => {
                         if env.has_local(var_name) {
                             return ParseError::with_pos(
@@ -357,8 +463,13 @@ impl StmtBox
                             );
                         }
 
-                        let new_decl = env.define_local(var_name, *mutable, fun);
-                        *decl = Some(new_decl)
+                        // If there is already a declaration associated with this variable,
+                        // this is the case for immutable globals
+                        if let Some(decl) = decl.as_mut() {
+                            env.define(var_name, *decl);
+                        } else {
+                            *decl = Some(env.define_local(var_name, *mutable, fun));
+                        }
                     }
                 }
             }
